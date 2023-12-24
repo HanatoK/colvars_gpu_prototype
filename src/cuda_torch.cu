@@ -4,11 +4,14 @@
 #include <iostream>
 
 CUDAGlobalForces::CUDAGlobalForces(int device_id):
-  m_device_id(device_id), m_step(0), m_num_atoms(0), m_d_positions(nullptr) {}
+  m_device_id(device_id), m_step(0), m_num_atoms(0), m_d_positions(nullptr), m_applied_forces(nullptr) {}
 
 CUDAGlobalForces::~CUDAGlobalForces() {
   if (m_d_positions != nullptr) {
     checkCudaErrors(cudaFree(m_d_positions));
+  }
+  if (m_applied_forces != nullptr) {
+    checkCudaErrors(cudaFree(m_applied_forces));
   }
 }
 
@@ -19,6 +22,11 @@ void CUDAGlobalForces::requestAtoms(int numAtoms) {
   }
   checkCudaErrors(cudaMalloc(&m_d_positions, m_num_atoms * sizeof(double3)));
   checkCudaErrors(cudaMemset(m_d_positions, 0, m_num_atoms * sizeof(double3)));
+  if (m_applied_forces != nullptr) {
+    checkCudaErrors(cudaFree(m_applied_forces));
+  }
+  checkCudaErrors(cudaMalloc(&m_applied_forces, m_num_atoms * sizeof(double3)));
+  checkCudaErrors(cudaMemset(m_applied_forces, 0, m_num_atoms * sizeof(double3)));
 }
 
 bool CUDAGlobalForces::updatePositions(const std::vector<double3> &pos) {
@@ -42,12 +50,17 @@ PytorchForces::PytorchForces(const std::string& nn_model_filename):
 
 void PytorchForces::requestAtoms(int numAtoms) {
   CUDAGlobalForces::requestAtoms(numAtoms);
-  m_option = torch::TensorOptions()
+  m_option_in = torch::TensorOptions()
     .dtype(torch::kFloat64)
     .layout(torch::kStrided)
     .device(torch::kCUDA, m_device_id)
     .requires_grad(true);
-  m_tensor_in = torch::from_blob(m_d_positions, {m_num_atoms, 3}, m_option);
+  m_option_force = torch::TensorOptions()
+    .dtype(torch::kFloat64)
+    .layout(torch::kStrided)
+    .device(torch::kCUDA, m_device_id)
+    .requires_grad(false);
+  m_tensor_in = torch::from_blob(m_d_positions, {m_num_atoms, 3}, m_option_in);
 }
 
 void PytorchForces::calculate() {
@@ -76,9 +89,10 @@ bool PytorchForces::applyForce(double* f, size_t force_size) {
     return false;
   }
   if (auto apply_force = m_module.find_method("apply_force")) {
-    auto in_force_tensor = torch::from_blob(f, {static_cast<long>(force_size)}, m_option);
+    auto in_force_tensor = torch::from_blob(f, {static_cast<long>(force_size)}, m_option_in);
     std::vector<torch::jit::IValue> input_args{m_tensor_in, in_force_tensor};
-    m_force_out = (apply_force.value())(input_args).toTensor();
+    // https://stackoverflow.com/questions/71790378/assign-memory-blob-to-py-torch-output-tensor-c-api
+    torch::from_blob(m_applied_forces, {m_num_atoms, 3}, m_option_force) = (apply_force.value())(input_args).toTensor();
   } else {
     std::cerr << "Cannot find function \"apply_force\"\n";
     return false;
