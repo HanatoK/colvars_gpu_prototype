@@ -56,23 +56,21 @@ class RMSD(nn.Module):
 
     @torch.jit.export
     def calc_gradients(self, atom_pos):
+        atom_pos.retain_grad()
         rmsd = self.rmsd_impl(atom_pos)
-        grad = torch.autograd.grad([rmsd], [atom_pos])[0]
-        if grad is None:
-            return torch.zeros_like(atom_pos, dtype=torch.float64, device='cuda')
-        else:
-            return grad
+        rmsd.backward()
+        return atom_pos.grad
 
     @torch.jit.export
     def apply_force(self, atom_pos, f):
+        atom_pos.retain_grad()
         rmsd = self.rmsd_impl(atom_pos)
-        grad = torch.autograd.grad([rmsd], [atom_pos])[0]
-        if grad is None:
-            return torch.zeros_like(atom_pos, dtype=torch.float64, device='cuda')
-        else:
-            return -1.0 * f * grad
+        rmsd.backward()
+        return -1.0 * f * atom_pos.grad
 
 
 m = torch.jit.script(RMSD('reference_frame.txt'))
+
+print(m.apply_force(torch.randn(m.num_atoms, 3, dtype=torch.float64, device='cuda', requires_grad=True), torch.randn(1)[0]))
 
 torch.jit.save(m, 'RMSD.pt')
