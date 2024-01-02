@@ -48,6 +48,9 @@ PytorchForces::PytorchForces(const std::string& nn_model_filename):
     m_module = torch::jit::load(nn_model_filename);
     m_module.to(torch::kFloat64);
     m_module.to(at::Device("cuda"));
+    std::vector<torch::jit::IValue> input_args{};
+    const auto value_out = m_module.get_method("output_dim")(input_args);
+    m_output_size = value_out.toInt();
   } catch (const c10::Error& e) {
     throw;
   }
@@ -70,13 +73,11 @@ void PytorchForces::requestAtoms(int numAtoms) {
 
 void PytorchForces::calculate() {
   std::vector<torch::jit::IValue> input_args{m_tensor_in};
-  const auto value_out = m_module.get_method("calc_value")(input_args);
-  auto output_dim = value_out.toTensor().sizes();
-  if (output_dim.empty()) m_output_size = 1;
-  else m_output_size = value_out.toTensor().sizes()[0];
-  if (m_output_stream) {
-    (*m_output_stream) << fmt::format(" {:12d} {:15.7e}\n", m_step, value_out.toTensor().item<double>());
-  }
+  const auto value_out = m_module.get_method("calc_value")(input_args).toTensor();
+  std::vector<double> host_out(value_out.numel());
+  value_out.contiguous();
+  cudaMemcpy(host_out.data(), value_out.const_data_ptr(), m_output_size * sizeof(double), cudaMemcpyDeviceToHost);
+  (*m_output_stream) << fmt::format(" {:12d} {:15.7e}\n", m_step, fmt::join(host_out, ""));
 }
 
 void PytorchForces::openOutputFile(const std::string &output_filename) {
@@ -84,7 +85,13 @@ void PytorchForces::openOutputFile(const std::string &output_filename) {
     return;
   } else {
     m_output_stream = std::make_unique<std::ofstream>(output_filename);
-    (*m_output_stream) << fmt::format("#{:>12s} {:>15s}\n", "step", "value");
+    std::vector<torch::jit::IValue> input_args{};
+    const auto cv_names = m_module.get_method("cv_names")(input_args).toList().vec();
+    (*m_output_stream) << fmt::format("#{:>12s}", "step");
+    for (size_t i = 0; i < cv_names.size(); ++i){
+      (*m_output_stream) << fmt::format(" {:>15s}", cv_names[i].toStringRef());
+    }
+    (*m_output_stream) << std::endl;
   }
 }
 

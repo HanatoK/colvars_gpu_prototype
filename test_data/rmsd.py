@@ -11,7 +11,7 @@ class RMSD(nn.Module):
         self.num_atoms = len(reference_positions)
         self.reference_positions, _ = self.bring_to_center(
             torch.tensor(
-                reference_positions, dtype=torch.float64, requires_grad=True, device='cuda'))
+                reference_positions, dtype=torch.float64, device='cuda'))
 
     def bring_to_center(self, data):
         center_of_geometry = data.mean(dim=0)
@@ -42,6 +42,7 @@ class RMSD(nn.Module):
         F = torch.stack((row0, row1, row2, row3))
         return F
 
+    @torch.jit.export
     def rmsd_impl(self, atom_pos):
         atom_pos_centered, _ = self.bring_to_center(atom_pos)
         matrix_F = self.build_matrix_F(atom_pos_centered, self.reference_positions)
@@ -63,10 +64,16 @@ class RMSD(nn.Module):
 
     @torch.jit.export
     def apply_force(self, atom_pos, f):
-        atom_pos.retain_grad()
-        rmsd = self.rmsd_impl(atom_pos)
-        rmsd.backward()
-        return -1.0 * f * atom_pos.grad
+        grad = self.calc_gradients(atom_pos)
+        return -1.0 * f * grad
+
+    @torch.jit.export
+    def output_dim(self):
+        return 1
+
+    @torch.jit.export
+    def cv_names(self):
+        return ['RMSD']
 
 
 m = torch.jit.script(RMSD('reference_frame.txt'))
