@@ -17,13 +17,13 @@ public:
   bool updatePositions(const std::vector<double3>& pos);
   virtual bool applyForce(double* f, size_t force_size) = 0;
   virtual void calculate() = 0;
-  const double3* getForces() const { return m_applied_forces; }
+  const double* getForces() const { return m_applied_forces; }
 protected:
   int m_device_id;
   int64_t m_step;
   int64_t m_num_atoms;
-  double3 *m_d_positions;
-  double3 *m_applied_forces;
+  double *m_d_positions;
+  double *m_applied_forces;
 };
 
 class PytorchForces: public CUDAGlobalForces {
